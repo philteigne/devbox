@@ -54,7 +54,8 @@ attach from another) without building it now.
 ```
 .devbox/
 ├─ .docs/
-│  └─ PLAN.md                         # this document
+│  ├─ IMPLEMENTATION-PLAN.md          # this document (local build plan)
+│  └─ REMOTE-PLAN.md                  # remote/phone access design (Phase R)
 ├─ .gitignore                         # ignore secrets, keys, runtime state
 ├─ requirements.txt                   # PyJWT[crypto], requests
 ├─ devbox/                            # Python package: CLI + core library
