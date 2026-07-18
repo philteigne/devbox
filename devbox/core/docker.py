@@ -27,14 +27,55 @@ def docker_info() -> None:
     run(["docker", "info"])
 
 
+RUNTIME_LABEL = "devbox.runtime"
+
+
 def image_exists() -> bool:
     proc = run(["docker", "image", "inspect", IMAGE_NAME], check=False)
     return proc.returncode == 0
 
 
+def runtime_hash() -> str:
+    runtime = paths.runtime_dir()
+    digest = hashlib.sha256()
+    for file in sorted(runtime.rglob("*")):
+        if file.is_file():
+            digest.update(file.relative_to(runtime).as_posix().encode("utf-8"))
+            digest.update(file_hash(file).encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+def _image_runtime_label() -> str:
+    proc = run(
+        ["docker", "image", "inspect", IMAGE_NAME, "--format", f'{{{{index .Config.Labels "{RUNTIME_LABEL}"}}}}'],
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
 def ensure_base_image() -> str:
-    if not image_exists():
-        run(["docker", "build", "-t", IMAGE_NAME, str(paths.runtime_dir())])
+    current = runtime_hash()
+    if image_exists() and _image_runtime_label() == current:
+        return image_id()
+
+    reason = "first run" if not image_exists() else "runtime files changed"
+    print(
+        f"Building base image `{IMAGE_NAME}` ({reason}; this can take a few minutes)...",
+        flush=True,
+    )
+    run(
+        [
+            "docker",
+            "build",
+            "--label",
+            f"{RUNTIME_LABEL}={current}",
+            "-t",
+            IMAGE_NAME,
+            str(paths.runtime_dir()),
+        ],
+        stream=True,
+    )
+    print(f"Base image `{IMAGE_NAME}` built.", flush=True)
     return image_id()
 
 

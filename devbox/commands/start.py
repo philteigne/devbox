@@ -86,13 +86,22 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
         _start_refresher(project, spec.name, state_dir)
 
     print(f"Mode: {mode}")
-    print(f"Attach: docker exec -it {spec.name} bash")
-    print('Cursor/VSCode: use "Attach to Running Container" and select this container.')
+    print("Your repo is mounted at /workspace inside the container.")
+    uri = _attach_folder_uri(spec.name)
+    print(f'Open in Cursor:  cursor --folder-uri "{uri}"')
+    print(f'Open in VSCode:  code --folder-uri "{uri}"')
+    print(f"Shell:           docker exec -it {spec.name} bash   # starts in /workspace")
     if mode == "PR":
         print("PR capability: agent can push feature branches and open pull requests.")
     else:
         print("PR capability: disabled; work is local only and you push from the host.")
     return 0
+
+
+def _attach_folder_uri(container_name: str, folder: str = "/workspace") -> str:
+    # Cursor/VSCode open a running container + folder via a hex-encoded name.
+    hex_name = container_name.encode("utf-8").hex()
+    return f"vscode-remote://attached-container+{hex_name}{folder}"
 
 
 def _containment_guard(devbox_home: Path, repo_root: Path) -> None:

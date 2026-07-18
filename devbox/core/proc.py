@@ -12,14 +12,18 @@ def run(
     cwd: str | Path | None = None,
     input_text: str | None = None,
     check: bool = True,
+    stream: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    # When stream=True the child's stdout/stderr are inherited so long-running
+    # commands (e.g. `docker build`) show live progress instead of appearing to
+    # hang. Output is not captured in that case, so proc.stdout/stderr are None.
     try:
         proc = subprocess.run(
             args,
             cwd=str(cwd) if cwd is not None else None,
             input=input_text,
             text=True,
-            capture_output=True,
+            capture_output=not stream,
             check=False,
         )
     except FileNotFoundError as exc:

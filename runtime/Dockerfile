@@ -24,10 +24,11 @@ COPY git-credential-devbox.sh /usr/local/bin/git-credential-devbox
 COPY gh-wrapper.sh /usr/local/bin/gh-wrapper
 
 RUN chmod +x /usr/local/bin/devbox-entrypoint /usr/local/bin/git-credential-devbox /usr/local/bin/gh-wrapper \
-    && mkdir -p /opt/devbox-bin \
-    && ln -s /usr/local/bin/gh-wrapper /opt/devbox-bin/gh
+    && ln -sf /usr/local/bin/gh-wrapper /usr/local/bin/gh
 
-ENV PATH="/opt/devbox-bin:${PATH}"
+# /usr/local/bin precedes /usr/bin in the default PATH used by login shells
+# (which reset PATH via /etc/profile), so the wrapper shadows the real gh
+# (/usr/bin/gh) in every shell -- login, non-login, and opencode subprocesses.
 
 ENTRYPOINT ["/usr/local/bin/devbox-entrypoint"]
 CMD ["sleep", "infinity"]

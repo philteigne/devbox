@@ -141,15 +141,17 @@ back to No-PR mode as a safety measure. (These are the config-level defaults;
 
 ```env
 # Set whichever provider you use; all present keys are injected into the container.
+OPENCODE_API_KEY=                     # opencode zen gateway (alias: OPENCODE_ZEN_API_KEY)
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=
-ZEN_API_KEY=
-OPENCODE_MODEL=                       # optional default model, e.g. anthropic/claude-...
+OPENCODE_MODEL=                       # optional default model; zen uses opencode/... e.g. opencode/claude-sonnet-4-5
 ```
 
 Provider is intentionally **deferred/configurable**: devbox injects whatever keys
-are present and lets opencode pick.
+are present and lets opencode pick. Note: opencode's own hosted gateway ("zen")
+is keyed by `OPENCODE_API_KEY` (alias `OPENCODE_ZEN_API_KEY`), **not** a
+`ZEN_API_KEY` variable.
 
 ---
 
