@@ -1,0 +1,3 @@
+runtime/*.sh text eol=lf
+runtime/Dockerfile text eol=lf
+

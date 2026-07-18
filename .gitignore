@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+.run/
+.test-tmp/
+secrets/*
+!secrets/.gitkeep
+app/*.pem
+app/*.private-key.pem

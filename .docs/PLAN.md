@@ -144,6 +144,7 @@ back to No-PR mode as a safety measure. (These are the config-level defaults;
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=
+ZEN_API_KEY=
 OPENCODE_MODEL=                       # optional default model, e.g. anthropic/claude-...
 ```
 
