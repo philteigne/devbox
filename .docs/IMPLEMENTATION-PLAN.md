@@ -166,7 +166,8 @@ and `ssh://git@github.com/<owner>/<repo>.git`.
 
 ### 5.1 `devbox init [path]`
 
-Purpose: register a repo you own for PR mode.
+Purpose: register a personal repo for PR mode. Organization-owned repositories
+are intentionally left uninitialized and run in No-PR mode.
 
 1. **Preconditions**
   - Path is inside a git work tree; resolve repo root. Else → error.
@@ -175,11 +176,11 @@ Purpose: register a repo you own for PR mode.
   *"Not logged in to GitHub. Run `gh auth login` first."* (hard break)
   - App identity present in `app/` (`app.env` + one `.pem`). Else → error with
   setup instructions.
-2. **Ownership check (personal-only for now)**
+2. **Ownership check (personal-only)**
   - `login = gh api user --jq .login`.
-  - Require `owner == login`. If not → error:
-  *"devbox currently supports repos owned by your personal account. `<owner>`
-  is not `<login>`. (Org support is planned.)"* (hard break)
+  - Require `owner == login`. If not → error that directs the user to
+  `devbox start` / `devbox start --no-pr`; no App installation or repository
+  settings are inspected or modified.
 3. **App install detection** (using an App JWT signed with the `.pem`)
   - `GET /app` → capture `slug` and derive the bot git identity; persist to
    `app/app.env` if not already set.
@@ -503,4 +504,3 @@ base image build, mount + launch + attach UX.
 - **Phase 5 — PR mode:** repo-scoped token, credential helper wiring, detached
 refresher, push/PR verified.
 - **Phase 6 — Polish:** error messages, logging, attach instructions, docs update.
-

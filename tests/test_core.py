@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import unittest
+from contextlib import ExitStack, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
+from devbox.commands import init, start
 from devbox.core import branch_protection, config, docker
+from devbox.core.errors import DevboxError
 from devbox.core.envfile import read_env, write_env
-from devbox.core.gitctx import parse_github_origin
+from devbox.core.gitctx import RepoContext, parse_github_origin
 from devbox.core.token_file import write_atomic
 
 
@@ -75,6 +80,62 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(project.pr_eligible)
         project.app_repo_access = "missing"
         self.assertFalse(project.pr_eligible)
+
+
+class InitSafetyTests(unittest.TestCase):
+    def test_non_personal_repo_stops_before_app_or_repo_access(self) -> None:
+        context = RepoContext(
+            root=Path("/tmp/butterfly"),
+            owner="dropmobility",
+            repo="butterfly",
+            origin_url="git@github.com:dropmobility/butterfly.git",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(init, "resolve_repo", return_value=context))
+            stack.enter_context(patch.object(init.gh, "require_gh_auth", return_value="token"))
+            stack.enter_context(patch.object(init.gh, "user", return_value={"login": "philteigne"}))
+            repo = stack.enter_context(patch.object(init.gh, "repo"))
+            load_identity = stack.enter_context(patch.object(init.github_app, "load_identity"))
+            with self.assertRaisesRegex(DevboxError, "NO-PR mode"):
+                init.run()
+
+        repo.assert_not_called()
+        load_identity.assert_not_called()
+
+
+class StartSafetyTests(unittest.TestCase):
+    def test_uninitialized_repo_starts_without_github_credentials(self) -> None:
+        context = RepoContext(
+            root=Path("/tmp/butterfly"),
+            owner="dropmobility",
+            repo="butterfly",
+            origin_url="git@github.com:dropmobility/butterfly.git",
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(start, "resolve_repo", return_value=context))
+            stack.enter_context(patch.object(start.docker, "docker_info"))
+            stack.enter_context(patch.object(start.config, "read_project_config", return_value=None))
+            stack.enter_context(patch.object(start.docker, "ensure_base_image", return_value="image"))
+            stack.enter_context(
+                patch.object(start.docker, "run_state_dir", return_value=Path("/tmp/devbox-run-test"))
+            )
+            stack.enter_context(patch.object(start, "read_env", return_value={}))
+            stack.enter_context(patch.object(start.docker, "fingerprint", return_value="fingerprint"))
+            stack.enter_context(patch.object(start.docker, "inspect_container", return_value=None))
+            create_container = stack.enter_context(patch.object(start.docker, "create_container"))
+            stack.enter_context(patch.object(start.docker, "write_fingerprint"))
+            require_auth = stack.enter_context(patch.object(start.gh, "require_gh_auth"))
+            load_identity = stack.enter_context(patch.object(start.github_app, "load_identity"))
+            output = StringIO()
+            with redirect_stdout(output):
+                start.run()
+
+        require_auth.assert_not_called()
+        load_identity.assert_not_called()
+        self.assertEqual(create_container.call_args.kwargs["mode"], "NO-PR")
+        self.assertIsNone(create_container.call_args.kwargs["run_path"])
+        self.assertNotIn("GH_TOKEN", create_container.call_args.kwargs["env"])
+        self.assertIn("Mode: NO-PR", output.getvalue())
 
 
 if __name__ == "__main__":

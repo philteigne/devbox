@@ -1,3 +1,4 @@
 PyJWT[crypto]>=2.8
 requests>=2.31
-
+# On macOS, create the venv with an OpenSSL-backed Python from Homebrew or
+# python.org. Apple's Python 3.9 is linked to LibreSSL, unsupported by urllib3 2.

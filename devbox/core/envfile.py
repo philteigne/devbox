@@ -21,7 +21,8 @@ def write_env(path: Path, values: dict[str, str], order: list[str] | None = None
     keys = list(order or [])
     keys.extend(k for k in values if k not in keys)
     body = "".join(f"{key}={values.get(key, '')}\n" for key in keys)
-    path.write_text(body, encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(body)
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -32,4 +33,3 @@ def _strip_inline_comment(value: str) -> str:
     if " #" in value:
         value = value.split(" #", 1)[0].rstrip()
     return value
-

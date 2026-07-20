@@ -22,7 +22,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     Path(args.pid_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.pid_file).write_text(str(os.getpid()) + "\n", encoding="utf-8", newline="\n")
+    with Path(args.pid_file).open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(str(os.getpid()) + "\n")
 
     identity = github_app.load_identity()
     token_file = Path(args.token_file)
@@ -38,4 +39,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
