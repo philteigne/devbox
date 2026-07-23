@@ -10,5 +10,6 @@ venv/
 .test-tmp/
 secrets/*
 !secrets/.gitkeep
+!secrets/*.env.example
 app/*.pem
 app/*.private-key.pem
