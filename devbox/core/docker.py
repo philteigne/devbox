@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import paths
 from .errors import DevboxError
+from .launch_config import LaunchConfig
 from .proc import run
 
 
@@ -30,8 +31,8 @@ def docker_info() -> None:
 RUNTIME_LABEL = "devbox.runtime"
 
 
-def image_exists() -> bool:
-    proc = run(["docker", "image", "inspect", IMAGE_NAME], check=False)
+def image_exists(image_name: str = IMAGE_NAME) -> bool:
+    proc = run(["docker", "image", "inspect", image_name], check=False)
     return proc.returncode == 0
 
 
@@ -56,7 +57,7 @@ def _image_runtime_label() -> str:
 def ensure_base_image() -> str:
     current = runtime_hash()
     if image_exists() and _image_runtime_label() == current:
-        return image_id()
+        return image_id(IMAGE_NAME)
 
     reason = "first run" if not image_exists() else "runtime files changed"
     print(
@@ -76,11 +77,62 @@ def ensure_base_image() -> str:
         stream=True,
     )
     print(f"Base image `{IMAGE_NAME}` built.", flush=True)
-    return image_id()
+    return image_id(IMAGE_NAME)
 
 
-def image_id() -> str:
-    return run(["docker", "image", "inspect", IMAGE_NAME, "--format", "{{.Id}}"]).stdout.strip()
+def image_id(image_name: str = IMAGE_NAME) -> str:
+    return run(["docker", "image", "inspect", image_name, "--format", "{{.Id}}"]).stdout.strip()
+
+
+def ensure_launch_image(
+    owner: str,
+    repo: str,
+    launch: LaunchConfig,
+    base_image_id: str,
+) -> tuple[str, str]:
+    if not launch.apt:
+        return IMAGE_NAME, base_image_id
+
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "base_image_id": base_image_id,
+                "launch_config_hash": launch.normalized_hash(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    image_name = f"devbox-{sanitize(owner)}-{sanitize(repo)}-runtime-{digest}"
+    build_dir = run_state_dir(owner, repo) / "build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    dockerfile = build_dir / "Dockerfile"
+    dockerfile.write_text(_derived_dockerfile(launch.apt), encoding="utf-8", newline="\n")
+
+    if not image_exists(image_name):
+        print(
+            f"Building launch image `{image_name}` (this can take a few minutes)...",
+            flush=True,
+        )
+        run(
+            ["docker", "build", "-t", image_name, str(build_dir)],
+            stream=True,
+        )
+        print(f"Launch image `{image_name}` built.", flush=True)
+    return image_name, image_id(image_name)
+
+
+def _derived_dockerfile(packages: tuple[str, ...]) -> str:
+    package_lines = " \\\n".join(f"        {package}" for package in packages)
+    return (
+        f"FROM {IMAGE_NAME}\n"
+        "\n"
+        "RUN apt-get update \\\n"
+        "    && apt-get install -y --no-install-recommends \\\n"
+        f"{package_lines} \\\n"
+        "    && apt-get clean \\\n"
+        "    && rm -rf /var/lib/apt/lists/*\n"
+    )
 
 
 def container_spec(owner: str, repo: str, repo_id: str) -> ContainerSpec:
@@ -128,6 +180,10 @@ def fingerprint(
     default_branch: str,
     run_path: Path | None,
     ai_env_path: Path,
+    launch_config_hash: str,
+    ports: list[int],
+    command: list[str],
+    launch_source_hash: str,
 ) -> str:
     payload = {
         "image": image,
@@ -139,6 +195,10 @@ def fingerprint(
         "credential_helper": file_hash(paths.runtime_dir() / "git-credential-devbox.sh"),
         "gh_wrapper": file_hash(paths.runtime_dir() / "gh-wrapper.sh"),
         "ai_env_hash": file_hash(ai_env_path),
+        "launch_config_hash": launch_config_hash,
+        "ports": ports,
+        "command": command,
+        "launch_source_hash": launch_source_hash,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -175,6 +235,9 @@ def create_container(
     mode: str,
     env: dict[str, str],
     run_path: Path | None,
+    image_name: str,
+    ports: list[int],
+    command: list[str],
 ) -> None:
     args = [
         "docker",
@@ -197,6 +260,8 @@ def create_container(
         args.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
     for key, value in env.items():
         args.extend(["-e", f"{key}={value}"])
-    args.extend([IMAGE_NAME, "sleep", "infinity"])
+    for port in ports:
+        args.extend(["-p", f"{port}:{port}"])
+    args.append(image_name)
+    args.extend(command)
     run(args)
-

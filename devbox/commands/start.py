@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..core import branch_protection, config, docker, gh, github_app, paths
+from ..core import branch_protection, config, docker, gh, github_app, launch_config, paths
 from ..core.envfile import read_env
 from ..core.errors import DevboxError
 from ..core.gitctx import resolve_repo
@@ -15,6 +15,7 @@ from ..core.token_file import write_atomic
 def run(path: str = ".", *, no_pr: bool = False) -> int:
     ctx = resolve_repo(path)
     _containment_guard(paths.devbox_home(), ctx.root)
+    launch = launch_config.load(ctx.owner, ctx.repo)
     docker.docker_info()
 
     project = config.read_project_config(ctx.owner, ctx.repo)
@@ -41,23 +42,33 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
     else:
         print(f"devbox not initialized for `{ctx.owner}/{ctx.repo}`; using NO-PR mode.")
 
-    image = docker.ensure_base_image()
+    base_image_id = docker.ensure_base_image()
+    image_name, selected_image_id = docker.ensure_launch_image(
+        ctx.owner,
+        ctx.repo,
+        launch,
+        base_image_id,
+    )
     spec = docker.container_spec(ctx.owner, ctx.repo, repo_id)
     state_dir = docker.run_state_dir(ctx.owner, ctx.repo)
     run_mount = state_dir if mode == "PR" else None
 
-    env = _container_env(project, ctx.owner, ctx.repo, default_branch, mode)
+    env = _container_env(project, ctx.owner, ctx.repo, default_branch, mode, launch.env)
     should_start_refresher = mode == "PR" and token_data is not None and identity is not None and project is not None
     if should_start_refresher:
         write_atomic(state_dir / "token", token_data["token"])
 
     fingerprint = docker.fingerprint(
-        image=image,
+        image=selected_image_id,
         mode=mode,
         repo_root=ctx.root,
         default_branch=default_branch,
         run_path=run_mount,
         ai_env_path=paths.secrets_dir() / "ai.env",
+        launch_config_hash=launch.normalized_hash(),
+        ports=list(launch.ports),
+        command=list(launch.command),
+        launch_source_hash=launch.source_hash,
     )
     existing = docker.inspect_container(spec.name)
     cached_fingerprint = docker.read_fingerprint(state_dir)
@@ -78,6 +89,9 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
             mode=mode,
             env=env,
             run_path=run_mount,
+            image_name=image_name,
+            ports=list(launch.ports),
+            command=list(launch.command),
         )
         docker.write_fingerprint(state_dir, fingerprint)
         print(f"Created container `{spec.name}`.")
@@ -152,7 +166,14 @@ def _live_pr_mode_check(identity: github_app.AppIdentity, project: config.Projec
     return token_data
 
 
-def _container_env(project: config.ProjectConfig | None, owner: str, repo: str, default_branch: str, mode: str) -> dict[str, str]:
+def _container_env(
+    project: config.ProjectConfig | None,
+    owner: str,
+    repo: str,
+    default_branch: str,
+    mode: str,
+    launch_env: dict[str, str],
+) -> dict[str, str]:
     ai_env = read_env(paths.secrets_dir() / "ai.env")
     env = {
         "GIT_USER_NAME": "devbox-local" if mode == "NO-PR" else (project and _project_git_name()) or "devbox[bot]",
@@ -162,6 +183,7 @@ def _container_env(project: config.ProjectConfig | None, owner: str, repo: str, 
         "REPO": repo,
         "MODE": mode,
     }
+    env.update(launch_env)
     for key, value in ai_env.items():
         if value:
             env[key] = value
