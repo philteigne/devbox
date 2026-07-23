@@ -12,8 +12,9 @@ def run(path: str = ".") -> int:
     login = gh.user(user_token).get("login", "")
     if ctx.owner.casefold() != str(login).casefold():
         raise DevboxError(
-            f"devbox currently supports repos owned by your personal account. "
-            f"`{ctx.owner}` is not `{login}`. (Org support is planned.)"
+            "devbox only initializes repositories owned by your personal account for PR mode. "
+            f"`{ctx.owner}` is not `{login}`. Repositories owned by organizations or other "
+            "accounts stay in NO-PR mode; run `devbox start` (or `devbox start --no-pr`) instead."
         )
 
     identity = github_app.load_identity()

@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="store_true", help="print version and exit")
     subparsers = parser.add_subparsers(dest="command")
 
-    init_parser = subparsers.add_parser("init", help="register a personal repository for PR mode")
+    init_parser = subparsers.add_parser("init", help="enable PR mode for a personal repository")
     init_parser.add_argument("path", nargs="?", default=".", help="path inside the target repository")
 
     check_parser = subparsers.add_parser("check", help="show cached devbox mode for a repository")
@@ -55,4 +55,3 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"unknown command: {args.command}")
     return 2
-

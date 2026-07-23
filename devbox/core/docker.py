@@ -224,7 +224,8 @@ def read_fingerprint(state_dir: Path) -> str | None:
 
 def write_fingerprint(state_dir: Path, value: str) -> None:
     path = state_dir / "fingerprint"
-    path.write_text(value + "\n", encoding="utf-8", newline="\n")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(value + "\n")
 
 
 def create_container(
