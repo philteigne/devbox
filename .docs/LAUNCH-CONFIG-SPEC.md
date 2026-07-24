@@ -48,7 +48,9 @@ to the current app behavior.
 version: 1
 
 tools:
+  codex: true
   opencode: true
+  node: 24
 
 apt:
   - ripgrep
@@ -88,17 +90,44 @@ Supported keys:
 
 ```yaml
 tools:
+  codex: true
   opencode: true
+  node: 24
 ```
 
 Rules:
 
+- `codex` is boolean and defaults to `false`.
+- When `codex: true`, the repository-specific image installs the official
+  standalone Codex CLI. The package payload is stored under
+  `/opt/devbox/codex-cli`, and the `codex` command is exposed through
+  `/usr/local/bin`.
+- Codex credentials are never supplied to the image build. Authenticate after
+  the container starts with `codex login` or, for a headless container,
+  `codex login --device-auth`.
+- Devbox mounts a gitignored, per-repository home directory at `/devbox-home`.
+  Codex therefore stores its login, configuration, logs, and sessions under
+  `/devbox-home/.codex`, where they survive container recreation.
 - `opencode` is boolean.
-- In the current implementation, opencode is already installed in the base
-  image. `opencode: true` is therefore informational/explicit for now.
-- `opencode: false` must not remove opencode from the base image in version one.
-  It means devbox should not auto-start opencode-specific serve behavior if that
-  is added later.
+- `opencode` defaults to `false`. When `true`, the repository-specific image
+  installs OpenCode using its official installer and places the executable in
+  `/usr/local/bin`.
+- OpenCode is not part of the shared `devbox-base` image. Repositories without
+  `tools.opencode: true` do not install it.
+- `node` is optional. It accepts a positive major version such as `24`, or an
+  exact semantic version string such as `"24.18.0"`.
+- A configured Node version installs a pinned release of NVM under
+  `/opt/devbox/nvm`, then resolves and installs the requested Node version with
+  `nvm install`.
+- A major-only version follows the latest available release within that major
+  at image-build time; use a full semantic version when reproducible builds are
+  required.
+- NVM is sourced for login, interactive, and non-interactive Bash processes.
+  The configured default Node version is also placed on the image `PATH`, so
+  direct `node`, `npm`, and `npx` processes do not depend on shell startup.
+- Interactive NVM changes are supported inside the persistent container but
+  are not part of the reproducible launch configuration. Add a required Node
+  version to `launch.yml` so it survives image or container recreation.
 
 ### 5.3 `apt`
 
@@ -314,7 +343,7 @@ Suggested dataclass:
 @dataclass(frozen=True)
 class LaunchConfig:
     version: int
-    tools: dict[str, bool]
+    tools: dict[str, bool | str]
     apt: tuple[str, ...]
     env: dict[str, str]
     ports: tuple[int, ...]
@@ -328,7 +357,7 @@ Default config:
 ```python
 LaunchConfig(
     version=1,
-    tools={"opencode": True},
+    tools={"codex": False, "opencode": False},
     apt=(),
     env={},
     ports=(),
@@ -357,7 +386,8 @@ Starter file:
 version: 1
 
 tools:
-  opencode: true
+  codex: false
+  opencode: false
 
 apt: []
 

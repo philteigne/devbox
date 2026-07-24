@@ -43,8 +43,8 @@ attach from another) without building it now.
 | **Installation**         | The account-level install of the App. Identified by `INSTALLATION_ID` (same across all your personal repos). Has a repo-access setting: `all` or `selected`. |
 | **Project config**       | Per-repo record under `config/<owner>/<repo>/config.env`. Non-secret IDs only.                                                                               |
 | **PR mode / No-PR mode** | Whether the container receives a scoped token.                                                                                                               |
-| **Base image**           | Shared Docker image `devbox-base` with git, gh, opencode, tooling.                                                                                           |
-| **Container**            | Per-repo, persistent container named `devbox-<owner>-<repo>-<shortid>`, where `<shortid>` disambiguates repos that sanitize to the same name.                |
+| **Base image**           | Shared Docker image `devbox-base` with the core Git, GitHub CLI, and shell runtime. Optional tools live in repository-specific launch images.                |
+| **Container**            | Per-repo, persistent container named `devbox-<owner>-<repo>-<shortid>`, where `<shortid>` disambiguates repos that sanitize to the same name, with a persistent gitignored home under `.run/`. |
 
 
 ---
@@ -352,7 +352,8 @@ are intentionally left uninitialized and run in No-PR mode.
     `gh` does not read git credential helpers.
   - **No-PR mode:** unset any credential helper and set a failing `GIT_ASKPASS`
   so accidental pushes fail fast instead of prompting.
-  - opencode is baked into the image; provider key(s) via env means no
+  - When `tools.opencode: true` is present in `launch.yml`, opencode is baked
+  into the repository-specific image; provider key(s) via env mean no
   interactive login is needed.
   - Keep the container alive for attach.
 9. **PR mode token lifecycle:**
@@ -373,10 +374,14 @@ are intentionally left uninitialized and run in No-PR mode.
 ## 6. Runtime (container) design
 
 - **Base image (`runtime/Dockerfile`):** `python:3.12-slim` (or similar) + `bash`,
-`git`, `curl`, `ca-certificates`, the **GitHub CLI** (`gh`), and **opencode**
-(installed via its official install script at build time). `entrypoint.sh`,
-`git-credential-devbox.sh`, and `gh-wrapper.sh` copied in and `chmod +x`.
-- **opencode** runs the AI work; it is treated as swappable ("for now").
+`git`, `curl`, `ca-certificates`, and the **GitHub CLI** (`gh`). `entrypoint.sh`,
+`git-credential-devbox.sh`, and `gh-wrapper.sh` are copied in and `chmod +x`.
+- **opencode** is opt-in through repository `launch.yml`, is installed into the
+derived launch image, and runs the AI work; it is treated as swappable ("for
+now").
+- **Codex CLI** is also opt-in through repository `launch.yml`. Its standalone
+package is baked into the derived image without credentials; interactive login
+state is written to the repository's persistent `/devbox-home`.
 - **Credential helper (`git-credential-devbox.sh`):** on a `get` request, parses
 git's stdin and responds **only** when `protocol=https` and `host=github.com`,
 emitting `username=x-access-token` and

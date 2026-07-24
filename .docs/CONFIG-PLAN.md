@@ -49,11 +49,13 @@ separate product decision.
 
 ## Current behavior and constraints
 
-- `runtime/Dockerfile` currently installs OpenCode unconditionally with
-  `curl -fsSL https://opencode.ai/install | bash`.
-- The same Dockerfile installs Bash, certificates, curl, Git, gnupg, and `gh`.
-- `devbox/core/docker.py` manages one shared `devbox-base` image. Its runtime
-  label changes only when files below `runtime/` change.
+- `runtime/Dockerfile` no longer installs OpenCode. Repository launch config
+  opts in with `tools.opencode: true`, and `devbox/core/docker.py` installs it
+  into the corresponding derived image.
+- The base Dockerfile installs Bash, certificates, curl, Git, gnupg, and `gh`.
+- `devbox/core/docker.py` manages one shared `devbox-base` image plus
+  repository-specific derived images. The base runtime label changes only when
+  files below `runtime/` change.
 - `devbox start` creates a persistent container per repository and reuses it
   while its fingerprint still matches.
 - `runtime/entrypoint.sh` runs when a container is created, not on every later

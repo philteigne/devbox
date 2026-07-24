@@ -15,6 +15,8 @@ from .proc import run
 
 
 IMAGE_NAME = "devbox-base"
+DERIVED_IMAGE_SCHEMA = 4
+NVM_VERSION = "v0.40.6"
 
 
 @dataclass(frozen=True)
@@ -90,14 +92,20 @@ def ensure_launch_image(
     launch: LaunchConfig,
     base_image_id: str,
 ) -> tuple[str, str]:
-    if not launch.apt:
+    install_codex = launch.tools.get("codex") is True
+    install_opencode = launch.tools.get("opencode") is True
+    configured_node = launch.tools.get("node")
+    node_version = configured_node if isinstance(configured_node, str) else None
+    if not launch.apt and not node_version and not install_codex and not install_opencode:
         return IMAGE_NAME, base_image_id
 
     digest = hashlib.sha256(
         json.dumps(
             {
                 "base_image_id": base_image_id,
+                "builder_schema": DERIVED_IMAGE_SCHEMA,
                 "launch_config_hash": launch.normalized_hash(),
+                "nvm_version": NVM_VERSION,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -107,7 +115,16 @@ def ensure_launch_image(
     build_dir = run_state_dir(owner, repo) / "build"
     build_dir.mkdir(parents=True, exist_ok=True)
     dockerfile = build_dir / "Dockerfile"
-    dockerfile.write_text(_derived_dockerfile(launch.apt), encoding="utf-8", newline="\n")
+    dockerfile.write_text(
+        _derived_dockerfile(
+            launch.apt,
+            node_version,
+            install_codex,
+            install_opencode,
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
 
     if not image_exists(image_name):
         print(
@@ -122,17 +139,97 @@ def ensure_launch_image(
     return image_name, image_id(image_name)
 
 
-def _derived_dockerfile(packages: tuple[str, ...]) -> str:
-    package_lines = " \\\n".join(f"        {package}" for package in packages)
-    return (
-        f"FROM {IMAGE_NAME}\n"
-        "\n"
-        "RUN apt-get update \\\n"
-        "    && apt-get install -y --no-install-recommends \\\n"
-        f"{package_lines} \\\n"
-        "    && apt-get clean \\\n"
-        "    && rm -rf /var/lib/apt/lists/*\n"
-    )
+def _derived_dockerfile(
+    packages: tuple[str, ...],
+    node_version: str | None = None,
+    install_codex: bool = False,
+    install_opencode: bool = False,
+) -> str:
+    lines: list[str] = [f"FROM {IMAGE_NAME}", ""]
+    if node_version:
+        lines.extend(
+            [
+                "ENV NVM_DIR=/opt/devbox/nvm",
+                "ENV BASH_ENV=/etc/devbox/bash-env",
+                'ENV PATH="/opt/devbox/nvm/current/bin:${PATH}"',
+                "",
+            ]
+        )
+    if node_version or install_codex or install_opencode:
+        lines.extend(
+            [
+                'SHELL ["/bin/bash", "-o", "pipefail", "-c"]',
+                "",
+            ]
+        )
+    if node_version:
+        lines.extend(_nvm_install_lines(node_version))
+    if install_codex:
+        lines.extend(_codex_install_lines())
+    if install_opencode:
+        lines.extend(_opencode_install_lines())
+    if packages:
+        package_lines = " \\\n".join(f"        {package}" for package in packages)
+        lines.extend(
+            [
+                "RUN apt-get update \\",
+                "    && apt-get install -y --no-install-recommends \\",
+                f"{package_lines} \\",
+                "    && apt-get clean \\",
+                "    && rm -rf /var/lib/apt/lists/*",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _nvm_install_lines(node_version: str) -> list[str]:
+    return [
+        'RUN mkdir -p "$NVM_DIR" /etc/devbox \\',
+        f"    && curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/{NVM_VERSION}/install.sh \\",
+        '        | PROFILE=/dev/null NVM_DIR="$NVM_DIR" bash \\',
+        '    && . "$NVM_DIR/nvm.sh" \\',
+        f'    && nvm install "{node_version}" \\',
+        f'    && nvm alias default "{node_version}" \\',
+        "    && nvm use default \\",
+        '    && node_root="$(dirname "$(dirname "$(nvm which default)")")" \\',
+        '    && ln -sfn "$node_root" "$NVM_DIR/current" \\',
+        "    && printf '%s\\n' \\",
+        "        'export NVM_DIR=/opt/devbox/nvm' \\",
+        "        '[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"' \\",
+        "        > /etc/devbox/nvm-init.sh \\",
+        "    && ln -sf /etc/devbox/nvm-init.sh /etc/profile.d/devbox-nvm.sh \\",
+        "    && ln -sf /etc/devbox/nvm-init.sh /etc/devbox/bash-env \\",
+        "    && printf '%s\\n' '[ -r /etc/devbox/nvm-init.sh ] && . /etc/devbox/nvm-init.sh' \\",
+        "        >> /etc/bash.bashrc \\",
+        '    && chmod -R a+rwX "$NVM_DIR"',
+        "",
+    ]
+
+
+def _opencode_install_lines() -> list[str]:
+    return [
+        "RUN curl -fsSL https://opencode.ai/install \\",
+        "        | HOME=/root SHELL=/bin/bash bash -s -- --no-modify-path \\",
+        "    && install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode \\",
+        "    && rm -rf /root/.opencode \\",
+        "    && opencode --version",
+        "",
+    ]
+
+
+def _codex_install_lines() -> list[str]:
+    return [
+        "RUN mkdir -p /opt/devbox/codex-cli \\",
+        "    && curl -fsSL https://chatgpt.com/codex/install.sh \\",
+        "        | HOME=/root \\",
+        "          CODEX_HOME=/opt/devbox/codex-cli \\",
+        "          CODEX_INSTALL_DIR=/usr/local/bin \\",
+        "          CODEX_NON_INTERACTIVE=1 sh \\",
+        "    && chmod -R a+rX /opt/devbox/codex-cli \\",
+        "    && codex --version",
+        "",
+    ]
 
 
 def container_spec(owner: str, repo: str, repo_id: str) -> ContainerSpec:
@@ -178,6 +275,7 @@ def fingerprint(
     mode: str,
     repo_root: Path,
     default_branch: str,
+    home_path: Path,
     run_path: Path | None,
     ai_env_path: Path,
     launch_config_hash: str,
@@ -190,6 +288,7 @@ def fingerprint(
         "mode": mode,
         "repo_root": str(repo_root.resolve()),
         "default_branch": default_branch,
+        "home_path": str(home_path.resolve()),
         "run_path": str(run_path.resolve()) if run_path else "",
         "entrypoint": file_hash(paths.runtime_dir() / "entrypoint.sh"),
         "credential_helper": file_hash(paths.runtime_dir() / "git-credential-devbox.sh"),
@@ -233,6 +332,7 @@ def create_container(
     name: str,
     label_digest: str,
     repo_root: Path,
+    home_path: Path,
     mode: str,
     env: dict[str, str],
     run_path: Path | None,
@@ -252,6 +352,8 @@ def create_container(
         f"devbox.digest={label_digest}",
         "-v",
         f"{repo_root}:/workspace",
+        "-v",
+        f"{home_path}:/devbox-home",
         "-w",
         "/workspace",
     ]

@@ -51,6 +51,8 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
     )
     spec = docker.container_spec(ctx.owner, ctx.repo, repo_id)
     state_dir = docker.run_state_dir(ctx.owner, ctx.repo)
+    home_path = state_dir / "home"
+    home_path.mkdir(parents=True, exist_ok=True)
     run_mount = state_dir if mode == "PR" else None
 
     env = _container_env(project, ctx.owner, ctx.repo, default_branch, mode, launch.env)
@@ -63,6 +65,7 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
         mode=mode,
         repo_root=ctx.root,
         default_branch=default_branch,
+        home_path=home_path,
         run_path=run_mount,
         ai_env_path=paths.secrets_dir() / "ai.env",
         launch_config_hash=launch.normalized_hash(),
@@ -86,6 +89,7 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
             name=spec.name,
             label_digest=spec.label_digest,
             repo_root=ctx.root,
+            home_path=home_path,
             mode=mode,
             env=env,
             run_path=run_mount,
@@ -187,6 +191,7 @@ def _container_env(
     for key, value in ai_env.items():
         if value:
             env[key] = value
+    env["HOME"] = "/devbox-home"
     return env
 
 

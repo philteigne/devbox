@@ -14,16 +14,17 @@ from .errors import DevboxError
 
 
 _TOP_LEVEL_KEYS = {"version", "tools", "apt", "env", "ports", "command"}
-_TOOL_KEYS = {"opencode"}
+_TOOL_KEYS = {"codex", "opencode", "node"}
 _PACKAGE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9+_.-]*$")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NODE_VERSION = re.compile(r"^[1-9][0-9]*(?:\.[0-9]+\.[0-9]+)?$")
 _DEFAULT_COMMAND = ("sleep", "infinity")
 
 
 @dataclass(frozen=True)
 class LaunchConfig:
     version: int
-    tools: dict[str, bool]
+    tools: dict[str, bool | str]
     apt: tuple[str, ...]
     env: dict[str, str]
     ports: tuple[int, ...]
@@ -51,7 +52,7 @@ def path_for(owner: str, repo: str) -> Path:
 def default_config() -> LaunchConfig:
     return LaunchConfig(
         version=1,
-        tools={"opencode": True},
+        tools={"codex": False, "opencode": False},
         apt=(),
         env={},
         ports=(),
@@ -103,16 +104,30 @@ def load(owner: str, repo: str) -> LaunchConfig:
     )
 
 
-def _validate_tools(path: Path, value: Any) -> dict[str, bool]:
+def _validate_tools(path: Path, value: Any) -> dict[str, bool | str]:
     if not isinstance(value, dict):
         raise _invalid(path, "tools must be an object")
     unknown = [key for key in value if key not in _TOOL_KEYS]
     if unknown:
         raise _invalid(path, f"unknown tools key `{unknown[0]}`")
-    opencode = value.get("opencode", True)
+    codex = value.get("codex", False)
+    if type(codex) is not bool:
+        raise _invalid(path, "tools.codex must be a boolean")
+    opencode = value.get("opencode", False)
     if type(opencode) is not bool:
         raise _invalid(path, "tools.opencode must be a boolean")
-    return {"opencode": opencode}
+    tools: dict[str, bool | str] = {"codex": codex, "opencode": opencode}
+    node = value.get("node")
+    if node is not None:
+        if type(node) is int:
+            node = str(node)
+        if not isinstance(node, str) or not _NODE_VERSION.fullmatch(node):
+            raise _invalid(
+                path,
+                "tools.node must be a positive major version or semantic version string",
+            )
+        tools["node"] = node
+    return tools
 
 
 def _validate_apt(path: Path, value: Any) -> tuple[str, ...]:

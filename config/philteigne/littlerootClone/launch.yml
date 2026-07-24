@@ -1,0 +1,6 @@
+version: 1
+
+tools:
+  codex: true
+  opencode: true
+  node: 24

@@ -49,5 +49,7 @@ Container variables are applied in this order:
 3. Non-empty values from `secrets/ai.env`
 
 Later values win. Consequently, an AI secret can override a launch-config or
-built-in variable with the same name. Treat every non-empty entry in
-`secrets/ai.env` as container-visible secret material.
+built-in variable with the same name. `HOME` is the exception: Devbox always
+sets it to the persistent `/devbox-home` mount after applying overlays. Treat
+every non-empty entry in `secrets/ai.env` as container-visible secret material.
+

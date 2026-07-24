@@ -38,6 +38,7 @@ class LaunchConfigTests(unittest.TestCase):
     def test_missing_config_uses_defaults(self) -> None:
         config = launch_config.load("owner", "repo")
         self.assertEqual(config, launch_config.default_config())
+        self.assertEqual(config.tools, {"codex": False, "opencode": False})
         self.assertIsNone(config.path)
         self.assertEqual(config.source_hash, "")
 
@@ -45,7 +46,9 @@ class LaunchConfigTests(unittest.TestCase):
         body = """\
 version: 1
 tools:
+  codex: true
   opencode: false
+  node: 24
 apt:
   - ripgrep
   - jq
@@ -69,7 +72,10 @@ command:
 
         config = launch_config.load("owner", "repo")
 
-        self.assertEqual(config.tools, {"opencode": False})
+        self.assertEqual(
+            config.tools,
+            {"codex": True, "opencode": False, "node": "24"},
+        )
         self.assertEqual(config.apt, ("ripgrep", "jq"))
         self.assertEqual(
             config.env,
@@ -97,6 +103,28 @@ command:
             "version: 1\napt:\n  - curl && whoami\n",
             r"apt\[0\] contains invalid package name `curl && whoami`",
         )
+
+    def test_invalid_node_versions_are_rejected(self) -> None:
+        invalid_versions = ["true", "0", "latest", "24.1", '"24; RUN whoami"']
+        for version in invalid_versions:
+            with self.subTest(version=version):
+                self.assert_invalid(
+                    f"version: 1\ntools:\n  node: {version}\n",
+                    r"tools\.node must be a positive major version or semantic version string",
+                )
+
+    def test_codex_must_be_boolean(self) -> None:
+        self.assert_invalid(
+            'version: 1\ntools:\n  codex: "yes"\n',
+            r"tools\.codex must be a boolean",
+        )
+
+    def test_node_accepts_major_or_exact_semantic_version(self) -> None:
+        for configured, expected in [("22", "22"), ('"24.18.0"', "24.18.0")]:
+            with self.subTest(configured=configured):
+                self.write_launch(f"version: 1\ntools:\n  node: {configured}\n")
+                config = launch_config.load("owner", "repo")
+                self.assertEqual(config.tools["node"], expected)
 
     def test_invalid_env_keys_are_rejected(self) -> None:
         self.assert_invalid(
@@ -128,10 +156,15 @@ class DockerLaunchTests(unittest.TestCase):
         self.temp_dir = Path.cwd() / ".test-tmp" / "docker-launch" / self._testMethodName
         self.temp_dir.mkdir(parents=True, exist_ok=True)
 
+    def test_base_runtime_does_not_install_optional_tools(self) -> None:
+        dockerfile = (docker.paths.runtime_dir() / "Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("opencode.ai/install", dockerfile)
+        self.assertNotIn("nvm-sh/nvm", dockerfile)
+
     def test_derived_image_generates_allowlisted_dockerfile(self) -> None:
         launch = launch_config.LaunchConfig(
             version=1,
-            tools={"opencode": True},
+            tools={"opencode": False},
             apt=("ripgrep", "jq"),
             env={},
             ports=(),
@@ -186,6 +219,155 @@ RUN apt-get update \\
         self.assertEqual((image_name, image_id), ("devbox-base", "sha256:base"))
         self.assertFalse((self.temp_dir / "build").exists())
 
+    def test_node_tool_installs_nvm_and_resolves_configured_version(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"opencode": False, "node": "24"},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="node-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "node-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertEqual(
+            dockerfile,
+            """\
+FROM devbox-base
+
+ENV NVM_DIR=/opt/devbox/nvm
+ENV BASH_ENV=/etc/devbox/bash-env
+ENV PATH="/opt/devbox/nvm/current/bin:${PATH}"
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN mkdir -p "$NVM_DIR" /etc/devbox \\
+    && curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh \\
+        | PROFILE=/dev/null NVM_DIR="$NVM_DIR" bash \\
+    && . "$NVM_DIR/nvm.sh" \\
+    && nvm install "24" \\
+    && nvm alias default "24" \\
+    && nvm use default \\
+    && node_root="$(dirname "$(dirname "$(nvm which default)")")" \\
+    && ln -sfn "$node_root" "$NVM_DIR/current" \\
+    && printf '%s\\n' \\
+        'export NVM_DIR=/opt/devbox/nvm' \\
+        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"' \\
+        > /etc/devbox/nvm-init.sh \\
+    && ln -sf /etc/devbox/nvm-init.sh /etc/profile.d/devbox-nvm.sh \\
+    && ln -sf /etc/devbox/nvm-init.sh /etc/devbox/bash-env \\
+    && printf '%s\\n' '[ -r /etc/devbox/nvm-init.sh ] && . /etc/devbox/nvm-init.sh' \\
+        >> /etc/bash.bashrc \\
+    && chmod -R a+rwX "$NVM_DIR"
+""",
+        )
+        self.assertNotIn("FROM node:", dockerfile)
+
+    def test_opencode_tool_installs_binary_outside_build_user_home(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"opencode": True},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="opencode-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "opencode-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertEqual(
+            dockerfile,
+            """\
+FROM devbox-base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN curl -fsSL https://opencode.ai/install \\
+        | HOME=/root SHELL=/bin/bash bash -s -- --no-modify-path \\
+    && install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode \\
+    && rm -rf /root/.opencode \\
+    && opencode --version
+""",
+        )
+
+    def test_codex_tool_installs_standalone_cli_without_credentials(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"codex": True, "opencode": False},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="codex-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "codex-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertEqual(
+            dockerfile,
+            """\
+FROM devbox-base
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+RUN mkdir -p /opt/devbox/codex-cli \\
+    && curl -fsSL https://chatgpt.com/codex/install.sh \\
+        | HOME=/root \\
+          CODEX_HOME=/opt/devbox/codex-cli \\
+          CODEX_INSTALL_DIR=/usr/local/bin \\
+          CODEX_NON_INTERACTIVE=1 sh \\
+    && chmod -R a+rX /opt/devbox/codex-cli \\
+    && codex --version
+""",
+        )
+        self.assertNotIn("OPENAI_API_KEY", dockerfile)
+        self.assertNotIn("auth.json", dockerfile)
+
     def test_create_container_uses_ports_image_and_command_as_argv(self) -> None:
         with (
             patch.object(docker.platform, "system", return_value="Windows"),
@@ -199,6 +381,7 @@ RUN apt-get update \\
                 name="devbox-owner-repo",
                 label_digest="digest",
                 repo_root=self.temp_dir,
+                home_path=self.temp_dir / "home",
                 mode="NO-PR",
                 env={"A": "one"},
                 run_path=None,
@@ -210,6 +393,10 @@ RUN apt-get update \\
         args = run.call_args.args[0]
         self.assertIn(["-p", "3000:3000"], [args[index : index + 2] for index in range(len(args) - 1)])
         self.assertIn(["-p", "5173:5173"], [args[index : index + 2] for index in range(len(args) - 1)])
+        self.assertIn(
+            ["-v", f"{self.temp_dir / 'home'}:/devbox-home"],
+            [args[index : index + 2] for index in range(len(args) - 1)],
+        )
         self.assertEqual(args[-4:], ["custom-image", "python", "-m", "http.server"])
         self.assertNotIn("/devbox-run", " ".join(args))
 
@@ -219,6 +406,7 @@ RUN apt-get update \\
             "mode": "NO-PR",
             "repo_root": self.temp_dir,
             "default_branch": "main",
+            "home_path": self.temp_dir / "home",
             "run_path": None,
             "ai_env_path": self.temp_dir / "ai.env",
             "launch_config_hash": "normalized",
@@ -229,6 +417,7 @@ RUN apt-get update \\
         baseline = docker.fingerprint(**common)
         for key, value in {
             "image": "sha256:other",
+            "home_path": self.temp_dir / "other-home",
             "launch_config_hash": "other-normalized",
             "ports": [5173],
             "command": ["python"],
@@ -248,7 +437,7 @@ class StartLaunchTests(unittest.TestCase):
         secrets_dir = self.temp_dir / "secrets"
         secrets_dir.mkdir(exist_ok=True)
         (secrets_dir / "ai.env").write_text(
-            "SHARED=secret\nSECRET_ONLY=yes\n",
+            "SHARED=secret\nSECRET_ONLY=yes\nHOME=/secret-home\n",
             encoding="utf-8",
         )
         with patch.object(start.paths, "secrets_dir", return_value=secrets_dir):
@@ -262,6 +451,7 @@ class StartLaunchTests(unittest.TestCase):
                     "MODE": "from-launch",
                     "SHARED": "launch",
                     "LAUNCH_ONLY": "yes",
+                    "HOME": "/launch-home",
                 },
             )
 
@@ -269,6 +459,7 @@ class StartLaunchTests(unittest.TestCase):
         self.assertEqual(env["SHARED"], "secret")
         self.assertEqual(env["LAUNCH_ONLY"], "yes")
         self.assertEqual(env["SECRET_ONLY"], "yes")
+        self.assertEqual(env["HOME"], "/devbox-home")
 
     def test_invalid_launch_config_fails_before_any_docker_action(self) -> None:
         ctx = RepoContext(

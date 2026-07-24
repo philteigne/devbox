@@ -117,7 +117,11 @@ class StartSafetyTests(unittest.TestCase):
             stack.enter_context(patch.object(start.config, "read_project_config", return_value=None))
             stack.enter_context(patch.object(start.docker, "ensure_base_image", return_value="image"))
             stack.enter_context(
-                patch.object(start.docker, "run_state_dir", return_value=Path("/tmp/devbox-run-test"))
+                patch.object(
+                    start.docker,
+                    "run_state_dir",
+                    return_value=Path.cwd() / ".test-tmp" / "devbox-run-test",
+                )
             )
             stack.enter_context(patch.object(start, "read_env", return_value={}))
             stack.enter_context(patch.object(start.docker, "fingerprint", return_value="fingerprint"))
@@ -134,6 +138,11 @@ class StartSafetyTests(unittest.TestCase):
         load_identity.assert_not_called()
         self.assertEqual(create_container.call_args.kwargs["mode"], "NO-PR")
         self.assertIsNone(create_container.call_args.kwargs["run_path"])
+        self.assertEqual(
+            create_container.call_args.kwargs["home_path"],
+            Path.cwd() / ".test-tmp" / "devbox-run-test" / "home",
+        )
+        self.assertEqual(create_container.call_args.kwargs["env"]["HOME"], "/devbox-home")
         self.assertNotIn("GH_TOKEN", create_container.call_args.kwargs["env"])
         self.assertIn("Mode: NO-PR", output.getvalue())
 
