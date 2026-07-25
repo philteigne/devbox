@@ -14,17 +14,22 @@ from .errors import DevboxError
 
 
 _TOP_LEVEL_KEYS = {"version", "tools", "apt", "env", "ports", "command"}
-_TOOL_KEYS = {"codex", "opencode", "node"}
+_BOOLEAN_TOOL_KEYS = ("codex", "opencode", "claude", "agy", "fvm")
+_TOOL_KEYS = {*_BOOLEAN_TOOL_KEYS, "node", "bun"}
 _PACKAGE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9+_.-]*$")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _NODE_VERSION = re.compile(r"^[1-9][0-9]*(?:\.[0-9]+\.[0-9]+)?$")
+_BUN_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _DEFAULT_COMMAND = ("sleep", "infinity")
+
+
+ToolValue = bool | str | tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class LaunchConfig:
     version: int
-    tools: dict[str, bool | str]
+    tools: dict[str, ToolValue]
     apt: tuple[str, ...]
     env: dict[str, str]
     ports: tuple[int, ...]
@@ -52,7 +57,7 @@ def path_for(owner: str, repo: str) -> Path:
 def default_config() -> LaunchConfig:
     return LaunchConfig(
         version=1,
-        tools={"codex": False, "opencode": False},
+        tools={key: False for key in _BOOLEAN_TOOL_KEYS},
         apt=(),
         env={},
         ports=(),
@@ -104,30 +109,53 @@ def load(owner: str, repo: str) -> LaunchConfig:
     )
 
 
-def _validate_tools(path: Path, value: Any) -> dict[str, bool | str]:
+def _validate_tools(path: Path, value: Any) -> dict[str, ToolValue]:
     if not isinstance(value, dict):
         raise _invalid(path, "tools must be an object")
     unknown = [key for key in value if key not in _TOOL_KEYS]
     if unknown:
         raise _invalid(path, f"unknown tools key `{unknown[0]}`")
-    codex = value.get("codex", False)
-    if type(codex) is not bool:
-        raise _invalid(path, "tools.codex must be a boolean")
-    opencode = value.get("opencode", False)
-    if type(opencode) is not bool:
-        raise _invalid(path, "tools.opencode must be a boolean")
-    tools: dict[str, bool | str] = {"codex": codex, "opencode": opencode}
+    tools: dict[str, ToolValue] = {}
+    for key in _BOOLEAN_TOOL_KEYS:
+        enabled = value.get(key, False)
+        if type(enabled) is not bool:
+            raise _invalid(path, f"tools.{key} must be a boolean")
+        tools[key] = enabled
     node = value.get("node")
     if node is not None:
-        if type(node) is int:
-            node = str(node)
-        if not isinstance(node, str) or not _NODE_VERSION.fullmatch(node):
+        tools["node"] = _validate_node(path, node)
+    bun = value.get("bun")
+    if bun is not None:
+        if not isinstance(bun, str) or not _BUN_VERSION.fullmatch(bun):
             raise _invalid(
                 path,
-                "tools.node must be a positive major version or semantic version string",
+                "tools.bun must be an exact semantic version string",
             )
-        tools["node"] = node
+        tools["bun"] = bun
     return tools
+
+
+def _validate_node(path: Path, value: Any) -> str | tuple[str, ...]:
+    is_list = isinstance(value, list)
+    raw_versions = value if is_list else [value]
+    if not raw_versions:
+        raise _invalid(
+            path,
+            "tools.node must be a positive version or a non-empty list of versions",
+        )
+
+    versions: list[str] = []
+    for index, raw_version in enumerate(raw_versions):
+        version = str(raw_version) if type(raw_version) is int else raw_version
+        if not isinstance(version, str) or not _NODE_VERSION.fullmatch(version):
+            field = f"tools.node[{index}]" if is_list else "tools.node"
+            raise _invalid(
+                path,
+                f"{field} must be a positive major version or semantic version string",
+            )
+        if version not in versions:
+            versions.append(version)
+    return tuple(versions) if is_list else versions[0]
 
 
 def _validate_apt(path: Path, value: Any) -> tuple[str, ...]:

@@ -15,7 +15,7 @@ from .proc import run
 
 
 IMAGE_NAME = "devbox-base"
-DERIVED_IMAGE_SCHEMA = 4
+DERIVED_IMAGE_SCHEMA = 8
 NVM_VERSION = "v0.40.6"
 
 
@@ -94,9 +94,28 @@ def ensure_launch_image(
 ) -> tuple[str, str]:
     install_codex = launch.tools.get("codex") is True
     install_opencode = launch.tools.get("opencode") is True
+    install_claude = launch.tools.get("claude") is True
+    install_agy = launch.tools.get("agy") is True
+    install_fvm = launch.tools.get("fvm") is True
     configured_node = launch.tools.get("node")
-    node_version = configured_node if isinstance(configured_node, str) else None
-    if not launch.apt and not node_version and not install_codex and not install_opencode:
+    if isinstance(configured_node, str):
+        node_versions = (configured_node,)
+    elif isinstance(configured_node, tuple):
+        node_versions = configured_node
+    else:
+        node_versions = ()
+    configured_bun = launch.tools.get("bun")
+    bun_version = configured_bun if isinstance(configured_bun, str) else None
+    if (
+        not launch.apt
+        and not node_versions
+        and not bun_version
+        and not install_codex
+        and not install_opencode
+        and not install_claude
+        and not install_agy
+        and not install_fvm
+    ):
         return IMAGE_NAME, base_image_id
 
     digest = hashlib.sha256(
@@ -118,9 +137,13 @@ def ensure_launch_image(
     dockerfile.write_text(
         _derived_dockerfile(
             launch.apt,
-            node_version,
+            node_versions,
+            bun_version,
             install_codex,
             install_opencode,
+            install_claude,
+            install_agy,
+            install_fvm,
         ),
         encoding="utf-8",
         newline="\n",
@@ -141,12 +164,16 @@ def ensure_launch_image(
 
 def _derived_dockerfile(
     packages: tuple[str, ...],
-    node_version: str | None = None,
+    node_versions: tuple[str, ...] = (),
+    bun_version: str | None = None,
     install_codex: bool = False,
     install_opencode: bool = False,
+    install_claude: bool = False,
+    install_agy: bool = False,
+    install_fvm: bool = False,
 ) -> str:
     lines: list[str] = [f"FROM {IMAGE_NAME}", ""]
-    if node_version:
+    if node_versions:
         lines.extend(
             [
                 "ENV NVM_DIR=/opt/devbox/nvm",
@@ -155,19 +182,52 @@ def _derived_dockerfile(
                 "",
             ]
         )
-    if node_version or install_codex or install_opencode:
+    if bun_version:
+        lines.extend(
+            [
+                "ENV BUN_INSTALL=/opt/devbox/bun",
+                'ENV PATH="/opt/devbox/bun/bin:${PATH}"',
+                "",
+            ]
+        )
+    if install_fvm:
+        lines.extend(
+            [
+                "ENV FVM_INSTALL_DIR=/opt/devbox/fvm",
+                "ENV FVM_CACHE_PATH=/devbox-home/.cache/fvm",
+                'ENV PATH="/opt/devbox/fvm/bin:${PATH}"',
+                "",
+            ]
+        )
+    if (
+        node_versions
+        or bun_version
+        or install_codex
+        or install_opencode
+        or install_claude
+        or install_agy
+        or install_fvm
+    ):
         lines.extend(
             [
                 'SHELL ["/bin/bash", "-o", "pipefail", "-c"]',
                 "",
             ]
         )
-    if node_version:
-        lines.extend(_nvm_install_lines(node_version))
+    if node_versions:
+        lines.extend(_nvm_install_lines(node_versions))
+    if bun_version:
+        lines.extend(_bun_install_lines(bun_version))
     if install_codex:
         lines.extend(_codex_install_lines())
     if install_opencode:
         lines.extend(_opencode_install_lines())
+    if install_claude:
+        lines.extend(_claude_install_lines())
+    if install_agy:
+        lines.extend(_agy_install_lines())
+    if install_fvm:
+        lines.extend(_fvm_install_lines())
     if packages:
         package_lines = " \\\n".join(f"        {package}" for package in packages)
         lines.extend(
@@ -183,14 +243,16 @@ def _derived_dockerfile(
     return "\n".join(lines)
 
 
-def _nvm_install_lines(node_version: str) -> list[str]:
+def _nvm_install_lines(node_versions: tuple[str, ...]) -> list[str]:
+    default_version = node_versions[0]
+    install_lines = [f'    && nvm install "{version}" \\' for version in node_versions]
     return [
         'RUN mkdir -p "$NVM_DIR" /etc/devbox \\',
         f"    && curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/{NVM_VERSION}/install.sh \\",
         '        | PROFILE=/dev/null NVM_DIR="$NVM_DIR" bash \\',
         '    && . "$NVM_DIR/nvm.sh" \\',
-        f'    && nvm install "{node_version}" \\',
-        f'    && nvm alias default "{node_version}" \\',
+        *install_lines,
+        f'    && nvm alias default "{default_version}" \\',
         "    && nvm use default \\",
         '    && node_root="$(dirname "$(dirname "$(nvm which default)")")" \\',
         '    && ln -sfn "$node_root" "$NVM_DIR/current" \\',
@@ -203,6 +265,20 @@ def _nvm_install_lines(node_version: str) -> list[str]:
         "    && printf '%s\\n' '[ -r /etc/devbox/nvm-init.sh ] && . /etc/devbox/nvm-init.sh' \\",
         "        >> /etc/bash.bashrc \\",
         '    && chmod -R a+rwX "$NVM_DIR"',
+        "",
+    ]
+
+
+def _bun_install_lines(version: str) -> list[str]:
+    return [
+        "RUN apt-get update \\",
+        "    && apt-get install -y --no-install-recommends unzip \\",
+        "    && rm -rf /var/lib/apt/lists/* \\",
+        '    && mkdir -p "$BUN_INSTALL" \\',
+        "    && curl -fsSL https://bun.com/install \\",
+        f'        | HOME=/root BUN_INSTALL="$BUN_INSTALL" bash -s -- "bun-v{version}" \\',
+        '    && chmod -R a+rwX "$BUN_INSTALL" \\',
+        f'    && test "$(bun --version)" = "{version}"',
         "",
     ]
 
@@ -228,6 +304,46 @@ def _codex_install_lines() -> list[str]:
         "          CODEX_NON_INTERACTIVE=1 sh \\",
         "    && chmod -R a+rX /opt/devbox/codex-cli \\",
         "    && codex --version",
+        "",
+    ]
+
+
+def _claude_install_lines() -> list[str]:
+    return [
+        "RUN install -d -m 0755 /etc/apt/keyrings \\",
+        "    && curl -fsSL https://downloads.claude.ai/keys/claude-code.asc \\",
+        "        -o /etc/apt/keyrings/claude-code.asc \\",
+        '    && echo "deb [signed-by=/etc/apt/keyrings/claude-code.asc] \\',
+        '        https://downloads.claude.ai/claude-code/apt/stable stable main" \\',
+        "        > /etc/apt/sources.list.d/claude-code.list \\",
+        "    && apt-get update \\",
+        "    && apt-get install -y --no-install-recommends claude-code \\",
+        "    && rm -rf /var/lib/apt/lists/* \\",
+        "    && claude --version",
+        "",
+    ]
+
+
+def _agy_install_lines() -> list[str]:
+    return [
+        "RUN mkdir -p /opt/devbox/agy/bin \\",
+        "    && curl -fsSL https://antigravity.google/cli/install.sh \\",
+        "        | HOME=/root bash -s -- --dir /opt/devbox/agy/bin \\",
+        "    && ln -s /opt/devbox/agy/bin/agy /usr/local/bin/agy \\",
+        "    && chmod -R a+rwX /opt/devbox/agy \\",
+        "    && rm -rf /root/.cache/antigravity \\",
+        "    && agy --version",
+        "",
+    ]
+
+
+def _fvm_install_lines() -> list[str]:
+    return [
+        'RUN mkdir -p "$FVM_INSTALL_DIR" \\',
+        "    && curl -fsSL https://fvm.app/install.sh \\",
+        '        | HOME=/opt/devbox FVM_INSTALL_DIR="$FVM_INSTALL_DIR" CI=1 bash \\',
+        '    && chmod -R a+rwX "$FVM_INSTALL_DIR" \\',
+        "    && fvm --version",
         "",
     ]
 

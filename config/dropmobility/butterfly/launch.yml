@@ -1,0 +1,29 @@
+version: 1
+
+tools:
+  codex: true
+  opencode: true
+  claude: true
+  agy: true
+  fvm: true
+  # The first version is the default; use `nvm use 16` for legacy services.
+  node:
+    - 22
+    - 16
+  bun: 1.3.9
+
+apt:
+  - build-essential
+  - postgresql-client
+  - unzip
+  - xz-utils
+  - zip
+  - libglu1-mesa
+
+env:
+  BUTTERFLY_HOME: /workspace
+
+ports:
+  - 8080
+  - 8886
+  - 8889

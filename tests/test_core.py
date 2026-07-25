@@ -113,6 +113,13 @@ class StartSafetyTests(unittest.TestCase):
         )
         with ExitStack() as stack:
             stack.enter_context(patch.object(start, "resolve_repo", return_value=context))
+            stack.enter_context(
+                patch.object(
+                    start.launch_config,
+                    "load",
+                    return_value=start.launch_config.default_config(),
+                )
+            )
             stack.enter_context(patch.object(start.docker, "docker_info"))
             stack.enter_context(patch.object(start.config, "read_project_config", return_value=None))
             stack.enter_context(patch.object(start.docker, "ensure_base_image", return_value="image"))

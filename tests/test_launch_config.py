@@ -38,7 +38,16 @@ class LaunchConfigTests(unittest.TestCase):
     def test_missing_config_uses_defaults(self) -> None:
         config = launch_config.load("owner", "repo")
         self.assertEqual(config, launch_config.default_config())
-        self.assertEqual(config.tools, {"codex": False, "opencode": False})
+        self.assertEqual(
+            config.tools,
+            {
+                "codex": False,
+                "opencode": False,
+                "claude": False,
+                "agy": False,
+                "fvm": False,
+            },
+        )
         self.assertIsNone(config.path)
         self.assertEqual(config.source_hash, "")
 
@@ -48,7 +57,11 @@ version: 1
 tools:
   codex: true
   opencode: false
+  claude: true
+  agy: false
+  fvm: true
   node: 24
+  bun: 1.3.9
 apt:
   - ripgrep
   - jq
@@ -74,7 +87,15 @@ command:
 
         self.assertEqual(
             config.tools,
-            {"codex": True, "opencode": False, "node": "24"},
+            {
+                "codex": True,
+                "opencode": False,
+                "claude": True,
+                "agy": False,
+                "fvm": True,
+                "node": "24",
+                "bun": "1.3.9",
+            },
         )
         self.assertEqual(config.apt, ("ripgrep", "jq"))
         self.assertEqual(
@@ -113,11 +134,13 @@ command:
                     r"tools\.node must be a positive major version or semantic version string",
                 )
 
-    def test_codex_must_be_boolean(self) -> None:
-        self.assert_invalid(
-            'version: 1\ntools:\n  codex: "yes"\n',
-            r"tools\.codex must be a boolean",
-        )
+    def test_optional_agent_tools_must_be_boolean(self) -> None:
+        for tool in ("codex", "opencode", "claude", "agy", "fvm"):
+            with self.subTest(tool=tool):
+                self.assert_invalid(
+                    f'version: 1\ntools:\n  {tool}: "yes"\n',
+                    rf"tools\.{tool} must be a boolean",
+                )
 
     def test_node_accepts_major_or_exact_semantic_version(self) -> None:
         for configured, expected in [("22", "22"), ('"24.18.0"', "24.18.0")]:
@@ -125,6 +148,40 @@ command:
                 self.write_launch(f"version: 1\ntools:\n  node: {configured}\n")
                 config = launch_config.load("owner", "repo")
                 self.assertEqual(config.tools["node"], expected)
+
+    def test_node_accepts_ordered_version_list_and_removes_duplicates(self) -> None:
+        self.write_launch(
+            """\
+version: 1
+tools:
+  node:
+    - 22
+    - 16
+    - 22
+"""
+        )
+
+        config = launch_config.load("owner", "repo")
+
+        self.assertEqual(config.tools["node"], ("22", "16"))
+
+    def test_node_version_list_must_be_non_empty_and_valid(self) -> None:
+        self.assert_invalid(
+            "version: 1\ntools:\n  node: []\n",
+            r"tools\.node must be a positive version or a non-empty list of versions",
+        )
+        self.assert_invalid(
+            "version: 1\ntools:\n  node:\n    - 22\n    - latest\n",
+            r"tools\.node\[1\] must be a positive major version or semantic version string",
+        )
+
+    def test_bun_requires_an_exact_semantic_version(self) -> None:
+        for configured in ("true", "1", "latest", "1.3", '"1.3.9; whoami"'):
+            with self.subTest(configured=configured):
+                self.assert_invalid(
+                    f"version: 1\ntools:\n  bun: {configured}\n",
+                    r"tools\.bun must be an exact semantic version string",
+                )
 
     def test_invalid_env_keys_are_rejected(self) -> None:
         self.assert_invalid(
@@ -159,6 +216,10 @@ class DockerLaunchTests(unittest.TestCase):
     def test_base_runtime_does_not_install_optional_tools(self) -> None:
         dockerfile = (docker.paths.runtime_dir() / "Dockerfile").read_text(encoding="utf-8")
         self.assertNotIn("opencode.ai/install", dockerfile)
+        self.assertNotIn("downloads.claude.ai", dockerfile)
+        self.assertNotIn("antigravity.google", dockerfile)
+        self.assertNotIn("bun.com/install", dockerfile)
+        self.assertNotIn("fvm.app/install.sh", dockerfile)
         self.assertNotIn("nvm-sh/nvm", dockerfile)
 
     def test_derived_image_generates_allowlisted_dockerfile(self) -> None:
@@ -279,6 +340,71 @@ RUN mkdir -p "$NVM_DIR" /etc/devbox \\
         )
         self.assertNotIn("FROM node:", dockerfile)
 
+    def test_node_tool_installs_multiple_versions_and_defaults_to_first(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"node": ("22", "16")},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="node-image-id"),
+            patch.object(docker, "run"),
+        ):
+            docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        node_22 = dockerfile.index('nvm install "22"')
+        node_16 = dockerfile.index('nvm install "16"')
+        default = dockerfile.index('nvm alias default "22"')
+        self.assertLess(node_22, node_16)
+        self.assertLess(node_16, default)
+
+    def test_bun_tool_installs_pinned_binary_on_path(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"bun": "1.3.9"},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="bun-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "bun-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("ENV BUN_INSTALL=/opt/devbox/bun", dockerfile)
+        self.assertIn('ENV PATH="/opt/devbox/bun/bin:${PATH}"', dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends unzip", dockerfile)
+        self.assertIn("https://bun.com/install", dockerfile)
+        self.assertIn('"bun-v1.3.9"', dockerfile)
+        self.assertIn('test "$(bun --version)" = "1.3.9"', dockerfile)
+
     def test_opencode_tool_installs_binary_outside_build_user_home(self) -> None:
         launch = launch_config.LaunchConfig(
             version=1,
@@ -367,6 +493,109 @@ RUN mkdir -p /opt/devbox/codex-cli \\
         )
         self.assertNotIn("OPENAI_API_KEY", dockerfile)
         self.assertNotIn("auth.json", dockerfile)
+
+    def test_claude_tool_installs_signed_stable_package_without_credentials(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"claude": True},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="claude-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "claude-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("https://downloads.claude.ai/keys/claude-code.asc", dockerfile)
+        self.assertIn("https://downloads.claude.ai/claude-code/apt/stable", dockerfile)
+        self.assertIn("apt-get install -y --no-install-recommends claude-code", dockerfile)
+        self.assertIn("claude --version", dockerfile)
+        self.assertNotIn("ANTHROPIC_API_KEY", dockerfile)
+        self.assertNotIn(".credentials.json", dockerfile)
+
+    def test_agy_tool_installs_binary_outside_build_user_home(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"agy": True},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="agy-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "agy-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("https://antigravity.google/cli/install.sh", dockerfile)
+        self.assertIn("--dir /opt/devbox/agy/bin", dockerfile)
+        self.assertIn("ln -s /opt/devbox/agy/bin/agy /usr/local/bin/agy", dockerfile)
+        self.assertIn("agy --version", dockerfile)
+        self.assertNotIn("GOOGLE_API_KEY", dockerfile)
+
+    def test_fvm_tool_installs_manager_with_persistent_sdk_cache(self) -> None:
+        launch = launch_config.LaunchConfig(
+            version=1,
+            tools={"fvm": True},
+            apt=(),
+            env={},
+            ports=(),
+            command=("sleep", "infinity"),
+            path=None,
+            source_hash="",
+        )
+        with (
+            patch.object(docker, "run_state_dir", return_value=self.temp_dir),
+            patch.object(docker, "image_exists", return_value=False),
+            patch.object(docker, "image_id", return_value="fvm-image-id"),
+            patch.object(docker, "run"),
+        ):
+            image_name, image_id = docker.ensure_launch_image(
+                "owner",
+                "repo",
+                launch,
+                "sha256:base",
+            )
+
+        self.assertNotEqual(image_name, "devbox-base")
+        self.assertEqual(image_id, "fvm-image-id")
+        dockerfile = (self.temp_dir / "build" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("ENV FVM_INSTALL_DIR=/opt/devbox/fvm", dockerfile)
+        self.assertIn("ENV FVM_CACHE_PATH=/devbox-home/.cache/fvm", dockerfile)
+        self.assertIn('ENV PATH="/opt/devbox/fvm/bin:${PATH}"', dockerfile)
+        self.assertIn("https://fvm.app/install.sh", dockerfile)
+        self.assertIn("FVM_INSTALL_DIR=\"$FVM_INSTALL_DIR\" CI=1 bash", dockerfile)
+        self.assertIn("fvm --version", dockerfile)
+        self.assertNotIn("fvm install", dockerfile)
+        self.assertNotIn("flutter doctor", dockerfile)
 
     def test_create_container_uses_ports_image_and_command_as_argv(self) -> None:
         with (
