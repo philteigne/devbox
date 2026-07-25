@@ -8,7 +8,7 @@ from pathlib import Path
 from ..core import branch_protection, config, docker, gh, github_app, launch_config, paths
 from ..core.envfile import read_env
 from ..core.errors import DevboxError
-from ..core.gitctx import resolve_repo
+from ..core.gitctx import git_autocrlf, resolve_repo
 from ..core.token_file import write_atomic
 
 
@@ -16,6 +16,7 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
     ctx = resolve_repo(path)
     _containment_guard(paths.devbox_home(), ctx.root)
     launch = launch_config.load(ctx.owner, ctx.repo)
+    host_git_autocrlf = git_autocrlf(ctx.root)
     docker.docker_info()
 
     project = config.read_project_config(ctx.owner, ctx.repo)
@@ -55,7 +56,15 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
     home_path.mkdir(parents=True, exist_ok=True)
     run_mount = state_dir if mode == "PR" else None
 
-    env = _container_env(project, ctx.owner, ctx.repo, default_branch, mode, launch.env)
+    env = _container_env(
+        project,
+        ctx.owner,
+        ctx.repo,
+        default_branch,
+        mode,
+        launch.env,
+        git_autocrlf=host_git_autocrlf,
+    )
     should_start_refresher = mode == "PR" and token_data is not None and identity is not None and project is not None
     if should_start_refresher:
         write_atomic(state_dir / "token", token_data["token"])
@@ -72,6 +81,7 @@ def run(path: str = ".", *, no_pr: bool = False) -> int:
         ports=list(launch.ports),
         command=list(launch.command),
         launch_source_hash=launch.source_hash,
+        git_autocrlf=host_git_autocrlf,
     )
     existing = docker.inspect_container(spec.name)
     cached_fingerprint = docker.read_fingerprint(state_dir)
@@ -177,6 +187,8 @@ def _container_env(
     default_branch: str,
     mode: str,
     launch_env: dict[str, str],
+    *,
+    git_autocrlf: str | None = None,
 ) -> dict[str, str]:
     ai_env = read_env(paths.secrets_dir() / "ai.env")
     env = {
@@ -192,6 +204,10 @@ def _container_env(
         if value:
             env[key] = value
     env["HOME"] = "/devbox-home"
+    if git_autocrlf:
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "core.autocrlf"
+        env["GIT_CONFIG_VALUE_0"] = git_autocrlf
     return env
 
 

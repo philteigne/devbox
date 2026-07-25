@@ -642,6 +642,7 @@ RUN mkdir -p /opt/devbox/codex-cli \\
             "ports": [3000],
             "command": ["sleep", "infinity"],
             "launch_source_hash": "source",
+            "git_autocrlf": "true",
         }
         baseline = docker.fingerprint(**common)
         for key, value in {
@@ -651,6 +652,7 @@ RUN mkdir -p /opt/devbox/codex-cli \\
             "ports": [5173],
             "command": ["python"],
             "launch_source_hash": "other-source",
+            "git_autocrlf": "input",
         }.items():
             with self.subTest(key=key):
                 changed = {**common, key: value}
@@ -666,7 +668,10 @@ class StartLaunchTests(unittest.TestCase):
         secrets_dir = self.temp_dir / "secrets"
         secrets_dir.mkdir(exist_ok=True)
         (secrets_dir / "ai.env").write_text(
-            "SHARED=secret\nSECRET_ONLY=yes\nHOME=/secret-home\n",
+            "SHARED=secret\n"
+            "SECRET_ONLY=yes\n"
+            "HOME=/secret-home\n"
+            "GIT_CONFIG_VALUE_0=false\n",
             encoding="utf-8",
         )
         with patch.object(start.paths, "secrets_dir", return_value=secrets_dir):
@@ -682,6 +687,7 @@ class StartLaunchTests(unittest.TestCase):
                     "LAUNCH_ONLY": "yes",
                     "HOME": "/launch-home",
                 },
+                git_autocrlf="true",
             )
 
         self.assertEqual(env["MODE"], "from-launch")
@@ -689,6 +695,9 @@ class StartLaunchTests(unittest.TestCase):
         self.assertEqual(env["LAUNCH_ONLY"], "yes")
         self.assertEqual(env["SECRET_ONLY"], "yes")
         self.assertEqual(env["HOME"], "/devbox-home")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.autocrlf")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "true")
 
     def test_invalid_launch_config_fails_before_any_docker_action(self) -> None:
         ctx = RepoContext(

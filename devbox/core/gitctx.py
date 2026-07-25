@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import DevboxError
-from .proc import output
+from .proc import output, run
 
 
 GITHUB_REMOTE_PATTERNS = [
@@ -53,3 +53,12 @@ def parse_github_origin(url: str) -> tuple[str, str] | None:
             return match.group("owner"), match.group("repo")
     return None
 
+
+def git_autocrlf(repo_root: Path) -> str | None:
+    proc = run(
+        ["git", "config", "--get", "core.autocrlf"],
+        cwd=repo_root,
+        check=False,
+    )
+    value = proc.stdout.strip()
+    return value if proc.returncode == 0 and value else None

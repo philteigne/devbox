@@ -4,10 +4,11 @@ import unittest
 from contextlib import ExitStack, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 from devbox.commands import init, start
-from devbox.core import branch_protection, config, docker
+from devbox.core import branch_protection, config, docker, gitctx
 from devbox.core.errors import DevboxError
 from devbox.core.envfile import read_env, write_env
 from devbox.core.gitctx import RepoContext, parse_github_origin
@@ -22,6 +23,29 @@ class GitContextTests(unittest.TestCase):
 
     def test_rejects_non_github_origin(self) -> None:
         self.assertIsNone(parse_github_origin("https://example.com/owner/repo.git"))
+
+    def test_effective_autocrlf_is_read_from_host_git_config(self) -> None:
+        with patch.object(
+            gitctx,
+            "run",
+            return_value=CompletedProcess([], 0, "true\n", ""),
+        ) as run:
+            value = gitctx.git_autocrlf(Path("/repo"))
+
+        self.assertEqual(value, "true")
+        run.assert_called_once_with(
+            ["git", "config", "--get", "core.autocrlf"],
+            cwd=Path("/repo"),
+            check=False,
+        )
+
+    def test_missing_autocrlf_returns_none(self) -> None:
+        with patch.object(
+            gitctx,
+            "run",
+            return_value=CompletedProcess([], 1, "", ""),
+        ):
+            self.assertIsNone(gitctx.git_autocrlf(Path("/repo")))
 
 
 class BranchProtectionTests(unittest.TestCase):
@@ -113,6 +137,7 @@ class StartSafetyTests(unittest.TestCase):
         )
         with ExitStack() as stack:
             stack.enter_context(patch.object(start, "resolve_repo", return_value=context))
+            stack.enter_context(patch.object(start, "git_autocrlf", return_value="true"))
             stack.enter_context(
                 patch.object(
                     start.launch_config,
@@ -150,6 +175,9 @@ class StartSafetyTests(unittest.TestCase):
             Path.cwd() / ".test-tmp" / "devbox-run-test" / "home",
         )
         self.assertEqual(create_container.call_args.kwargs["env"]["HOME"], "/devbox-home")
+        self.assertEqual(create_container.call_args.kwargs["env"]["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(create_container.call_args.kwargs["env"]["GIT_CONFIG_KEY_0"], "core.autocrlf")
+        self.assertEqual(create_container.call_args.kwargs["env"]["GIT_CONFIG_VALUE_0"], "true")
         self.assertNotIn("GH_TOKEN", create_container.call_args.kwargs["env"])
         self.assertIn("Mode: NO-PR", output.getvalue())
 

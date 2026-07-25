@@ -398,6 +398,7 @@ def fingerprint(
     ports: list[int],
     command: list[str],
     launch_source_hash: str,
+    git_autocrlf: str | None,
 ) -> str:
     payload = {
         "image": image,
@@ -414,6 +415,7 @@ def fingerprint(
         "ports": ports,
         "command": command,
         "launch_source_hash": launch_source_hash,
+        "git_autocrlf": git_autocrlf or "",
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
